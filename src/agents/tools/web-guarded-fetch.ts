@@ -1,3 +1,4 @@
+import { ProxyAgent, fetch as undiciFetch } from "undici";
 import {
   fetchWithSsrFGuard,
   type GuardedFetchOptions,
@@ -18,6 +19,8 @@ type WebToolGuardedFetchOptions = Omit<
 > & {
   timeoutSeconds?: number;
   useEnvProxy?: boolean;
+  /** Explicit proxy URL; takes precedence over env-based proxy. */
+  proxyUrl?: string;
 };
 type WebToolEndpointFetchOptions = Omit<WebToolGuardedFetchOptions, "policy" | "useEnvProxy">;
 
@@ -37,11 +40,25 @@ function resolveTimeoutMs(params: {
 export async function fetchWithWebToolsNetworkGuard(
   params: WebToolGuardedFetchOptions,
 ): Promise<GuardedFetchResult> {
-  const { timeoutSeconds, useEnvProxy, ...rest } = params;
+  const { timeoutSeconds, useEnvProxy, proxyUrl, ...rest } = params;
   const resolved = {
     ...rest,
     timeoutMs: resolveTimeoutMs({ timeoutMs: rest.timeoutMs, timeoutSeconds }),
   };
+
+  // Explicit proxy URL: create a ProxyAgent-backed fetch, bypass env proxy logic.
+  if (proxyUrl) {
+    const agent = new ProxyAgent(proxyUrl);
+    const proxyFetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+      undiciFetch(input as string | URL, {
+        ...(init as Record<string, unknown>),
+        dispatcher: agent,
+      }) as unknown as Promise<Response>) as typeof fetch;
+    return fetchWithSsrFGuard(
+      withTrustedEnvProxyGuardedFetchMode({ ...resolved, fetchImpl: proxyFetch }),
+    );
+  }
+
   return fetchWithSsrFGuard(
     useEnvProxy
       ? withTrustedEnvProxyGuardedFetchMode(resolved)
@@ -62,7 +79,7 @@ async function withWebToolsNetworkGuard<T>(
 }
 
 export async function withTrustedWebToolsEndpoint<T>(
-  params: WebToolEndpointFetchOptions,
+  params: WebToolEndpointFetchOptions & { proxyUrl?: string },
   run: (result: { response: Response; finalUrl: string }) => Promise<T>,
 ): Promise<T> {
   return await withWebToolsNetworkGuard(
