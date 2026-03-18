@@ -298,27 +298,44 @@ export class FeishuStreamingSession {
     }
     const apiBase = resolveApiBase(this.creds.domain);
     this.state.sequence += 1;
-    await fetchWithSsrFGuard({
-      url: `${apiBase}/cardkit/v1/cards/${this.state.cardId}/elements/content/content`,
-      init: {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${await getToken(this.creds)}`,
-          "Content-Type": "application/json",
+    try {
+      const { response, release } = await fetchWithSsrFGuard({
+        url: `${apiBase}/cardkit/v1/cards/${this.state.cardId}/elements/content/content`,
+        init: {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${await getToken(this.creds)}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            content: text,
+            sequence: this.state.sequence,
+            uuid: `s_${this.state.cardId}_${this.state.sequence}`,
+          }),
         },
-        body: JSON.stringify({
-          content: text,
-          sequence: this.state.sequence,
-          uuid: `s_${this.state.cardId}_${this.state.sequence}`,
-        }),
-      },
-      policy: { allowedHostnames: resolveAllowedHostnames(this.creds.domain) },
-      auditContext: "feishu.streaming-card.update",
-    })
-      .then(async ({ release }) => {
+        policy: { allowedHostnames: resolveAllowedHostnames(this.creds.domain) },
+        auditContext: "feishu.streaming-card.update",
+      });
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
         await release();
-      })
-      .catch((error) => onError?.(error));
+        throw new Error(`Card content update HTTP ${response.status}: ${body}`);
+      }
+      const data = (await response.json().catch(() => null)) as {
+        code?: number;
+        msg?: string;
+      } | null;
+      await release();
+      if (data && data.code !== 0) {
+        throw new Error(`Card content update error ${data.code}: ${data.msg ?? ""}`);
+      }
+    } catch (error) {
+      if (onError) {
+        onError(error);
+      } else {
+        throw error;
+      }
+    }
   }
 
   async update(text: string): Promise<void> {

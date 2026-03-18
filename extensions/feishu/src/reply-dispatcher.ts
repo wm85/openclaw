@@ -419,17 +419,30 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               textChunkLimit,
               chunkMode,
             )) {
-              await sendStructuredCardFeishu({
-                cfg,
-                to: chatId,
-                text: chunk,
-                replyToMessageId: sendReplyToMessageId,
-                replyInThread: effectiveReplyInThread,
-                mentions: first ? mentionTargets : undefined,
-                accountId,
-                header: cardHeader,
-                note: cardNote,
-              });
+              try {
+                await sendStructuredCardFeishu({
+                  cfg,
+                  to: chatId,
+                  text: chunk,
+                  replyToMessageId: sendReplyToMessageId,
+                  replyInThread: effectiveReplyInThread,
+                  mentions: first ? mentionTargets : undefined,
+                  accountId,
+                  header: cardHeader,
+                  note: cardNote,
+                });
+              } catch {
+                // Card failed (table limit, content too large, etc.) — fall back to plain text
+                await sendMessageFeishu({
+                  cfg,
+                  to: chatId,
+                  text: core.channel.text.convertMarkdownTables(chunk, tableMode),
+                  replyToMessageId: sendReplyToMessageId,
+                  replyInThread: effectiveReplyInThread,
+                  mentions: first ? mentionTargets : undefined,
+                  accountId,
+                });
+              }
               first = false;
             }
             if (info?.kind === "final") {
