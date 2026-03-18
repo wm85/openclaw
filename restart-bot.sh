@@ -16,17 +16,18 @@ DOMAIN="gui/$(id -u)"
 
 # ---- 机器人注册表 ----
 typeset -A BOT_LABEL BOT_PORT BOT_LOG BOT_DISPLAY
-BOT_DISPLAY=(adan 阿蛋 xiaoguang 小广 xiaolin 小麟 xiaoshao 小哨 xiaoxin 小馨)
-BOT_LABEL=(adan com.openclaw.gateway-adan xiaoguang com.openclaw.xiaoguang xiaolin com.openclaw.gateway-moai xiaoshao com.openclaw.gateway-xiaoshao xiaoxin com.openclaw.gateway-xiaoxin)
-BOT_PORT=(adan 18700 xiaoguang 18710 xiaolin 18720 xiaoshao 18730 xiaoxin 18740)
+BOT_DISPLAY=(adan 阿蛋 xiaoguang 小广 xiaolin 小麟 xiaoshao 小哨 xiaoxin 小馨 adai 阿呆)
+BOT_LABEL=(adan com.openclaw.gateway-adan xiaoguang com.openclaw.xiaoguang xiaolin com.openclaw.gateway-moai xiaoshao com.openclaw.gateway-xiaoshao xiaoxin com.openclaw.gateway-xiaoxin adai com.openclaw.gateway-adai)
+BOT_PORT=(adan 18700 xiaoguang 18710 xiaolin 18720 xiaoshao 18730 xiaoxin 18740 adai 18750)
 BOT_LOG=(
     adan    /tmp/openclaw-adan.log
     xiaoguang /tmp/openclaw-xiaoguang.log
     xiaolin   /tmp/openclaw-gateway-moai.log
     xiaoshao  /tmp/openclaw-xiaoshao.log
     xiaoxin   /tmp/openclaw-xiaoxin.log
+    adai      /tmp/openclaw-adai.log
 )
-ALL_BOTS=(adan xiaoguang xiaolin xiaoshao xiaoxin)
+ALL_BOTS=(adan xiaoguang xiaolin xiaoshao xiaoxin adai)
 
 # ---- 清理 macOS 冲突副本文件 ----
 clean_macos_conflict_copies() {
@@ -123,7 +124,7 @@ restart_one() {
     # Step 3: 等待端口就绪
     log_info "等待端口 ${port} 就绪 ..."
     local w=0
-    while ! check_port "$port" && (( w < 30 )); do
+    while ! check_port "$port" && (( w < 60 )); do
         sleep 1
         (( w++ ))
     done
@@ -156,6 +157,7 @@ resolve_bot() {
         xiaolin|xl|小麟|moai|麟)      echo xiaolin ;;
         xiaoshao|xs|小哨|哨)          echo xiaoshao ;;
         xiaoxin|xx|小馨|馨)           echo xiaoxin ;;
+        adai|ad|阿呆|呆)              echo adai ;;
         *)                             echo "" ;;
     esac
 }
@@ -239,6 +241,7 @@ main() {
         echo "  xiaolin / xl     重启小麟 (端口 18720)"
         echo "  xiaoshao / xs    重启小哨 (端口 18730)"
         echo "  xiaoxin / xx     重启小馨 (端口 18740)"
+        echo "  adai / ad        重启阿呆 (端口 18750)"
         echo "  status / s       查看所有机器人状态"
         echo ""
         echo "支持同时指定多个: ${0:t} adan xiaolin"
@@ -250,7 +253,7 @@ main() {
         local bot=$(resolve_bot "$arg")
         if [[ -z "$bot" ]]; then
             log_err "未知机器人: ${arg}"
-            echo "  可用: adan(阿蛋), xiaoguang/xg(小广), xiaolin/xl(小麟), xiaoshao/xs(小哨)"
+            echo "  可用: adan(阿蛋), xiaoguang/xg(小广), xiaolin/xl(小麟), xiaoshao/xs(小哨), adai/ad(阿呆)"
             exit 1
         fi
         targets+=("$bot")
