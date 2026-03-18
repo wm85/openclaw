@@ -1,11 +1,12 @@
 #!/usr/bin/env zsh
 
 # ============================================================
-# git_update.sh — 从上游拉取最新代码并合并到本地
+# git_update.sh — 从上游拉取最新代码，合并本地修改，推送到 fork
 #
 # 用法:
-#   ./git_update.sh          # 拉取并合并
-#   ./git_update.sh --dry    # 只查看差异，不合并
+#   ./git_update.sh          # 完整流程：拉取→合并→构建→推送
+#   ./git_update.sh --dry    # 只查看差异，不操作
+#   ./git_update.sh --pull   # 只拉取合并，不构建不推送
 # ============================================================
 
 set -eo pipefail
@@ -26,16 +27,53 @@ log_warn() { printf '%s  %s\n' "$(c_yellow '[WARN]')" "$*" }
 log_err()  { printf '%s   %s\n' "$(c_red '[ERR]')" "$*" }
 log_step() { printf '\n%s\n' "$(c_bold "━━━ $* ━━━")" }
 
-REMOTE="origin"
+UPSTREAM="origin"          # 上游 remote
+FORK="myfork"              # 自己的 fork remote
 BRANCH="main"
+FORK_BRANCH="local-fixes"  # fork 上的分支名
 DRY_RUN=0
-[[ "${1:-}" == "--dry" ]] && DRY_RUN=1
+PULL_ONLY=0
 
-# ---- 清理 macOS 冲突副本文件 ----
-# macOS 在文件冲突时会生成 "filename 2.ext", "filename 3.ext" 等副本
-# 这些文件会污染 git 仓库，必须定期清理
+# ---- 解析参数 ----
+for arg in "$@"; do
+    case "$arg" in
+        --dry)  DRY_RUN=1 ;;
+        --pull) PULL_ONLY=1 ;;
+    esac
+done
+
+# ---- 我们的本地修改 commit 的标识（用于冲突解决策略）----
+# 这些文件在冲突时优先保留本地版本
+LOCAL_KEEP_FILES=(
+    "restart-bot.sh"
+    "cleanup_sessions.sh"
+    "git_update.sh"
+    ".vscode/settings.json"
+    "settings.json"
+)
+
+# 这些文件冲突时用上游版本（我们的启动优化已被 dist-runtime 替代）
+UPSTREAM_KEEP_FILES=(
+    "extensions/feishu/src/channel.ts"
+    "extensions/feishu/src/bot.ts"
+    "extensions/feishu/src/directory.ts"
+    "extensions/feishu/src/runtime.ts"
+    "src/auto-reply/reply/history.ts"
+    "src/auto-reply/reply/mentions.ts"
+    "src/channels/plugins/onboarding/helpers.ts"
+    "src/plugin-sdk/feishu.ts"
+)
+
+# 这些文件需要保留我们的修改（bug fix）
+OUR_KEEP_FILES=(
+    "extensions/feishu/src/streaming-card.ts"
+    "extensions/feishu/src/reply-dispatcher.ts"
+    "scripts/tsdown-build.mjs"
+    "src/agents/tools/web-guarded-fetch.ts"
+)
+
+# ---- 清理 macOS 冲突副本 ----
 clean_macos_conflict_copies() {
-    local count=0
     local found
     found=$(find "$REPO_DIR" -maxdepth 6 \
         \( -name '* 2' -o -name '* 3' -o -name '* 4' \
@@ -43,74 +81,74 @@ clean_macos_conflict_copies() {
         -not -path '*/node_modules/*' \
         -not -path '*/.git/*' 2>/dev/null || true)
     if [[ -n "$found" ]]; then
-        count=$(echo "$found" | wc -l | tr -d ' ')
-        log_warn "发现 ${count} 个 macOS 冲突副本文件，正在清理..."
-        echo "$found" | while IFS= read -r f; do
-            rm -rf "$f" 2>/dev/null
-        done
-        log_ok "已清理 ${count} 个冲突副本文件"
+        local cnt=$(echo "$found" | wc -l | tr -d ' ')
+        log_warn "清理 ${cnt} 个 macOS 冲突副本"
+        echo "$found" | while IFS= read -r f; do rm -rf "$f" 2>/dev/null; done
     fi
 }
 
-# ---- 需要保护的本地配置/脚本 ----
-# 这些文件在 rebase 冲突时优先保留本地版本
-LOCAL_PROTECTED_FILES=(
-    "restart-bot.sh"
-    "git_update.sh"
-)
+# ---- 自动解决冲突 ----
+auto_resolve_conflicts() {
+    local conflicts=$(git diff --name-only --diff-filter=U 2>/dev/null)
+    [[ -z "$conflicts" ]] && return 0
 
-# 机器人配置目录（不在 git 仓库内，无需 git 保护，但更新后需检查完整性）
-BOT_CONFIG_DIRS=(
-    "$HOME/.openclaw-adan"
-    "$HOME/.openclaw-xiaoguang"
-    "$HOME/.openclaw-moai"
-    "$HOME/.openclaw-xiaoshao"
-    "$HOME/.openclaw-xiaoxin"
-)
-
-# ---- 备份机器人配置 ----
-backup_bot_configs() {
-    local backup_dir="/tmp/openclaw-config-backup-$(date +%Y%m%d%H%M%S)"
-    mkdir -p "$backup_dir"
-    for dir in "${BOT_CONFIG_DIRS[@]}"; do
-        local name=$(basename "$dir")
-        if [[ -f "${dir}/openclaw.json" ]]; then
-            cp "${dir}/openclaw.json" "${backup_dir}/${name}.json"
+    local unresolved=0
+    echo "$conflicts" | while IFS= read -r f; do
+        # 本地保留的文件（脚本/配置）
+        local keep_local=0
+        for lf in "${LOCAL_KEEP_FILES[@]}"; do
+            [[ "$f" == "$lf" ]] && keep_local=1 && break
+        done
+        if (( keep_local )); then
+            log_info "  保留本地: $f"
+            git checkout --theirs "$f" 2>/dev/null && git add "$f" 2>/dev/null
+            continue
         fi
-    done
-    echo "$backup_dir"
-}
 
-# ---- 验证机器人配置完整性 ----
-verify_bot_configs() {
-    local backup_dir="$1"
-    local issues=0
-    for dir in "${BOT_CONFIG_DIRS[@]}"; do
-        local name=$(basename "$dir")
-        local cfg="${dir}/openclaw.json"
-        if [[ ! -f "$cfg" ]]; then
-            log_warn "配置文件缺失: ${cfg}"
-            if [[ -f "${backup_dir}/${name}.json" ]]; then
-                cp "${backup_dir}/${name}.json" "$cfg"
-                log_ok "已从备份恢复: ${cfg}"
-            else
-                (( issues++ ))
-            fi
+        # 上游优先的文件（已被 dist-runtime 替代的启动优化）
+        local keep_upstream=0
+        for uf in "${UPSTREAM_KEEP_FILES[@]}"; do
+            [[ "$f" == "$uf" ]] && keep_upstream=1 && break
+        done
+        if (( keep_upstream )); then
+            log_info "  用上游版: $f"
+            git checkout --ours "$f" 2>/dev/null && git add "$f" 2>/dev/null
+            continue
         fi
+
+        # 我们的 fix 优先
+        local keep_ours=0
+        for of in "${OUR_KEEP_FILES[@]}"; do
+            [[ "$f" == "$of" ]] && keep_ours=1 && break
+        done
+        if (( keep_ours )); then
+            log_info "  保留我们: $f"
+            git checkout --theirs "$f" 2>/dev/null && git add "$f" 2>/dev/null
+            continue
+        fi
+
+        # 未识别的冲突：用上游版本（安全默认）
+        log_warn "  未知冲突，用上游: $f"
+        git checkout --ours "$f" 2>/dev/null && git add "$f" 2>/dev/null
     done
-    return $issues
+
+    # 检查是否还有未解决的冲突
+    local remaining=$(git diff --name-only --diff-filter=U 2>/dev/null)
+    if [[ -n "$remaining" ]]; then
+        log_err "仍有未解决的冲突："
+        echo "$remaining" | while IFS= read -r f; do
+            printf '    %s\n' "$(c_red "$f")"
+        done
+        return 1
+    fi
+    return 0
 }
 
 # ============================================================
-# Step 0: 清理 macOS 冲突副本文件
+# Step 0: 前置检查
 # ============================================================
-log_step "Step 0: 清理 macOS 冲突副本"
+log_step "Step 0: 前置检查"
 clean_macos_conflict_copies
-
-# ============================================================
-# Step 1: 检查当前状态
-# ============================================================
-log_step "Step 1: 检查本地状态"
 
 CURRENT_BRANCH=$(git branch --show-current)
 if [[ "$CURRENT_BRANCH" != "$BRANCH" ]]; then
@@ -119,210 +157,186 @@ if [[ "$CURRENT_BRANCH" != "$BRANCH" ]]; then
 fi
 log_ok "当前分支: ${BRANCH}"
 
-# 显示本地未提交的修改
-LOCAL_CHANGES=$(git status --porcelain 2>/dev/null)
-if [[ -n "$LOCAL_CHANGES" ]]; then
-    count=$(echo "$LOCAL_CHANGES" | wc -l | tr -d ' ')
-    log_warn "本地有 ${count} 个未提交的修改："
-    echo "$LOCAL_CHANGES" | head -20 | while IFS= read -r line; do
-        printf '    %s\n' "$line"
-    done
-    if (( count > 20 )); then
-        printf '    ... 共 %s 个文件\n' "$count"
-    fi
-else
-    log_ok "工作区干净"
-fi
+# ============================================================
+# Step 1: 拉取上游最新
+# ============================================================
+log_step "Step 1: 拉取上游最新代码"
 
+git fetch "$UPSTREAM" "$BRANCH" --quiet 2>&1
+REMOTE_HEAD=$(git rev-parse "${UPSTREAM}/${BRANCH}")
 LOCAL_HEAD=$(git rev-parse HEAD)
+
+BEHIND=$(git rev-list --count HEAD.."${UPSTREAM}/${BRANCH}" 2>/dev/null || echo 0)
+AHEAD=$(git rev-list --count "${UPSTREAM}/${BRANCH}"..HEAD 2>/dev/null || echo 0)
+
 log_info "本地 HEAD: ${LOCAL_HEAD:0:10}"
-
-# ============================================================
-# Step 2: 从上游拉取最新代码
-# ============================================================
-log_step "Step 2: 从上游拉取最新代码"
-
-log_info "执行 git fetch ${REMOTE} ${BRANCH} ..."
-git fetch "$REMOTE" "$BRANCH" 2>&1 | while IFS= read -r line; do
-    printf '    %s\n' "$line"
-done
-
-REMOTE_HEAD=$(git rev-parse "${REMOTE}/${BRANCH}")
-log_info "远程 HEAD: ${REMOTE_HEAD:0:10}"
-
-# 检查是否有新提交
-BEHIND=$(git rev-list --count HEAD.."${REMOTE}/${BRANCH}" 2>/dev/null || echo 0)
-AHEAD=$(git rev-list --count "${REMOTE}/${BRANCH}"..HEAD 2>/dev/null || echo 0)
+log_info "上游 HEAD: ${REMOTE_HEAD:0:10}"
+log_info "上游领先 ${BEHIND} 个提交，本地领先 ${AHEAD} 个提交"
 
 if (( BEHIND == 0 )); then
-    log_ok "本地已是最新，无需更新"
+    log_ok "已是最新，无需更新"
     if (( AHEAD > 0 )); then
-        log_info "本地领先远程 ${AHEAD} 个提交（本地修改）"
+        log_info "本地有 ${AHEAD} 个本地提交"
     fi
     exit 0
 fi
 
-log_info "远程领先 ${BEHIND} 个提交，本地领先 ${AHEAD} 个提交"
-
-# 显示远程新增的提交
-log_info "远程新提交："
-git log --oneline --no-decorate HEAD.."${REMOTE}/${BRANCH}" | head -20 | while IFS= read -r line; do
+# 显示上游新提交
+log_info "上游新提交 (最近 15 条)："
+git log --oneline --no-decorate HEAD.."${UPSTREAM}/${BRANCH}" | head -15 | while IFS= read -r line; do
     printf '    %s\n' "$(c_green "$line")"
 done
-if (( BEHIND > 20 )); then
-    printf '    ... 共 %s 个提交\n' "$BEHIND"
-fi
+(( BEHIND > 15 )) && printf '    ... 共 %s 个提交\n' "$BEHIND"
 
 if (( DRY_RUN )); then
-    log_info "[DRY RUN] 仅查看差异，不执行合并"
-    printf '\n'
-    log_info "变更文件统计："
-    git diff --stat HEAD.."${REMOTE}/${BRANCH}" | tail -20
+    log_info "[DRY RUN] 仅查看差异，不执行"
+    printf '\n变更文件统计：\n'
+    git diff --stat HEAD.."${UPSTREAM}/${BRANCH}" | tail -20
     exit 0
 fi
 
 # ============================================================
-# Step 3: 提交本地修改
+# Step 2: 提交本地未保存的修改
 # ============================================================
-log_step "Step 3: 提交本地修改"
+log_step "Step 2: 保存本地修改"
 
+LOCAL_CHANGES=$(git status --porcelain 2>/dev/null)
 if [[ -n "$LOCAL_CHANGES" ]]; then
-    log_info "检测到未提交的修改，准备提交到本地仓库..."
-    
-    # 添加所有修改（包括新文件）
     git add -A
-    
-    # 生成提交信息
-    COMMIT_MSG="local: auto-commit changes before sync ($(date +%Y-%m-%d\ %H:%M:%S))"
-    
-    log_info "提交信息: ${COMMIT_MSG}"
-    if git commit -m "$COMMIT_MSG" 2>&1 | while IFS= read -r line; do
-        printf '    %s\n' "$line"
-    done; then
-        log_ok "本地修改已提交"
-    else
-        log_err "提交失败"
-        exit 1
-    fi
+    git commit -m "local: auto-commit before upstream sync ($(date +%Y-%m-%d\ %H:%M:%S))" 2>&1 | tail -1
+    log_ok "本地修改已提交"
 else
-    log_info "无未提交的修改，跳过提交步骤"
+    log_info "工作区干净，跳过"
 fi
 
 # ============================================================
-# Step 4: 备份机器人配置
+# Step 3: Rebase 上游代码
 # ============================================================
-STASHED=0
+log_step "Step 3: Rebase 上游代码"
 
-log_step "Step 4: 备份机器人配置"
+# 创建安全备份分支
+git branch -f backup-pre-sync HEAD 2>/dev/null
 
-CONFIG_BACKUP=$(backup_bot_configs)
-log_ok "配置已备份到: ${CONFIG_BACKUP}"
-
-# ============================================================
-# Step 5: 合并远程代码
-# ============================================================
-log_step "Step 5: 合并远程代码 (rebase)"
-
-log_info "执行 git rebase ${REMOTE}/${BRANCH} ..."
-
-if git rebase "${REMOTE}/${BRANCH}" 2>&1 | while IFS= read -r line; do
-    printf '    %s\n' "$line"
-done; then
+if git rebase "${UPSTREAM}/${BRANCH}" 2>&1 | tail -5; then
     log_ok "Rebase 成功"
 else
-    # Rebase 冲突
-    printf '\n'
-    log_err "Rebase 遇到冲突！"
+    log_warn "Rebase 遇到冲突，尝试自动解决..."
 
-    # 显示冲突文件
-    CONFLICTS=$(git diff --name-only --diff-filter=U 2>/dev/null)
-    if [[ -n "$CONFLICTS" ]]; then
-        log_warn "冲突文件："
-        auto_resolved=0
-        echo "$CONFLICTS" | while IFS= read -r f; do
-            # 检查是否是受保护的本地文件
-            protected=0
-            for pf in "${LOCAL_PROTECTED_FILES[@]}"; do
-                if [[ "$f" == "$pf" ]]; then
-                    protected=1
-                    break
+    # 循环处理每个冲突的 commit
+    local max_attempts=20
+    local attempt=0
+    while (( attempt < max_attempts )); do
+        (( attempt++ ))
+
+        if auto_resolve_conflicts; then
+            if GIT_EDITOR=true git rebase --continue 2>&1 | tail -3; then
+                # rebase --continue 成功，可能还有下一个 commit 冲突
+                # 检查 rebase 是否完成
+                if ! git rebase --show-current-patch 2>/dev/null | head -1 > /dev/null 2>&1; then
+                    break  # rebase 完成
                 fi
-            done
-
-            if (( protected )); then
-                printf '    %s %s\n' "$(c_yellow "$f")" "(本地保护文件，自动保留本地版本)"
-                git checkout --ours "$f" 2>/dev/null && git add "$f" 2>/dev/null
-                (( auto_resolved++ ))
             else
-                printf '    %s\n' "$(c_red "$f")"
-            fi
-        done
-
-        # 如果所有冲突都已自动解决，继续 rebase
-        REMAINING=$(git diff --name-only --diff-filter=U 2>/dev/null)
-        if [[ -z "$REMAINING" ]]; then
-            log_ok "所有冲突已自动解决（保留本地保护文件）"
-            if GIT_EDITOR=true git rebase --continue 2>&1 | while IFS= read -r line; do
-                printf '    %s\n' "$line"
-            done; then
-                log_ok "Rebase 继续成功"
-            else
-                log_err "Rebase 继续失败"
-                git rebase --abort 2>/dev/null
-                exit 1
+                # 可能又遇到新冲突，继续循环
+                continue
             fi
         else
-            printf '\n'
-            log_warn "请手动解决以上冲突，然后执行："
-            printf '    %s\n' "1. 编辑冲突文件，解决冲突标记 (<<<< ==== >>>>)"
-            printf '    %s\n' "2. git add <冲突文件>"
-            printf '    %s\n' "3. GIT_EDITOR=true git rebase --continue"
-            printf '    %s\n' ""
-            printf '    %s\n' "或者放弃本次合并: git rebase --abort"
-            printf '\n'
-            log_info "配置备份位置: ${CONFIG_BACKUP}"
+            log_err "无法自动解决冲突，回滚到备份"
+            git rebase --abort 2>/dev/null
+            git reset --hard backup-pre-sync 2>/dev/null
+            log_info "已回滚，请手动处理"
             exit 1
         fi
+    done
+
+    log_ok "所有冲突已自动解决"
+fi
+
+if (( PULL_ONLY )); then
+    log_ok "拉取合并完成 (--pull 模式，跳过构建和推送)"
+    git log --oneline -5
+    exit 0
+fi
+
+# ============================================================
+# Step 4: 安装依赖 + 构建
+# ============================================================
+log_step "Step 4: 安装依赖 + 构建"
+
+log_info "pnpm install ..."
+if pnpm install 2>&1 | tail -3; then
+    log_ok "依赖安装完成"
+else
+    log_err "依赖安装失败"
+    exit 1
+fi
+
+log_info "pnpm build ..."
+if pnpm build 2>&1 | tail -3; then
+    log_ok "构建成功"
+else
+    # TS declaration 错误不影响 dist 生成
+    if [[ -f dist/entry.js ]]; then
+        log_warn "构建有 TS 声明错误（不影响运行）"
+    else
+        log_err "构建失败，dist 未生成"
+        exit 1
+    fi
+fi
+
+log_info "生成 dist-runtime ..."
+node scripts/runtime-postbuild.mjs 2>&1
+if [[ -f dist-runtime/extensions/feishu/index.js ]]; then
+    log_ok "dist-runtime 生成成功"
+else
+    log_warn "dist-runtime 可能不完整"
+fi
+
+# 验证关键依赖没被 build 删掉
+if [[ ! -f node_modules/undici/index.js ]]; then
+    log_warn "undici 被 build 删了，重新安装..."
+    pnpm install --force 2>&1 | tail -1
+    if [[ -f node_modules/undici/index.js ]]; then
+        log_ok "undici 已恢复"
+    else
+        log_err "undici 恢复失败！检查 tsdown-build.mjs 是否有 --no-clean"
+        exit 1
     fi
 fi
 
 # ============================================================
-# Step 6: 验证机器人配置
+# Step 5: 推送到 fork
 # ============================================================
-log_step "Step 6: 验证机器人配置"
+log_step "Step 5: 推送到 fork"
 
-if verify_bot_configs "$CONFIG_BACKUP"; then
-    log_ok "所有机器人配置完好"
+if git remote get-url "$FORK" > /dev/null 2>&1; then
+    if git push "$FORK" "${BRANCH}:${FORK_BRANCH}" --force 2>&1; then
+        log_ok "已推送到 ${FORK}/${FORK_BRANCH}"
+    else
+        log_warn "推送失败（可能需要 gh auth login）"
+    fi
 else
-    log_warn "部分配置有问题，请检查"
+    log_warn "未配置 fork remote (${FORK})，跳过推送"
 fi
 
 # ============================================================
-# Step 7: 完成
+# 完成
 # ============================================================
 log_step "完成"
 
 NEW_HEAD=$(git rev-parse HEAD)
+NEW_AHEAD=$(git rev-list --count "${UPSTREAM}/${BRANCH}"..HEAD 2>/dev/null || echo 0)
+
 log_ok "更新完成: ${LOCAL_HEAD:0:10} → ${NEW_HEAD:0:10}"
-log_info "合并了 ${BEHIND} 个远程提交"
+log_info "合并了 ${BEHIND} 个上游提交，本地有 ${NEW_AHEAD} 个自定义提交"
 
-if (( AHEAD > 0 )); then
-    log_info "本地仍有 ${AHEAD} 个本地提交（未推送到远程）"
-fi
-
-# 完成后再次清理（rebase/merge 可能申生新的冲突副本）
 clean_macos_conflict_copies
 
-# 最终状态
-FINAL_CHANGES=$(git status --porcelain 2>/dev/null)
-if [[ -n "$FINAL_CHANGES" ]]; then
-    fcount=$(echo "$FINAL_CHANGES" | wc -l | tr -d ' ')
-    log_info "工作区有 ${fcount} 个未提交修改"
-fi
-
 printf '\n'
-log_info "最近5个提交："
+log_info "最近 5 个提交："
 git log --oneline --no-decorate -5 | while IFS= read -r line; do
     printf '    %s\n' "$line"
 done
+
+printf '\n'
+log_info "下一步: ./restart-bot.sh all  重启所有机器人"
 printf '\n'
