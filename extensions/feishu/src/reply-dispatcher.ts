@@ -287,7 +287,15 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         text = buildMentionedCardContent(mentionTargets, text);
       }
       const finalNote = resolveCardNote(agentId, identity, prefixContext.prefixContext);
-      await streaming.close(text, { note: finalNote });
+      try {
+        await streaming.close(text, { note: finalNote });
+      } catch (err: unknown) {
+        // Card send failed (e.g. table count over limit, content too large).
+        // Fall back to plain text so the user still gets the reply.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[feishu] card close failed, falling back to plain text: ${msg}`);
+        await sendChunkedTextReply({ text: streamText, useCard: false, infoKind: "final" });
+      }
     }
     streaming = null;
     streamingStartPromise = null;
