@@ -59,7 +59,16 @@ function findFatalUnresolvedImport(lines) {
 
 const result = spawnSync(
   "pnpm",
-  ["exec", "tsdown", "--config-loader", "unrun", "--logLevel", logLevel, ...extraArgs],
+  [
+    "exec",
+    "tsdown",
+    "--config-loader",
+    "unrun",
+    "--logLevel",
+    logLevel,
+    "--no-clean",
+    ...extraArgs,
+  ],
   {
     encoding: "utf8",
     stdio: "pipe",
