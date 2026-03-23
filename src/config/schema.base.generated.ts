@@ -4994,6 +4994,9 @@ export const GENERATED_BASE_CONFIG_SCHEMA = {
                     type: "number",
                     minimum: 0,
                   },
+                  proxy: {
+                    type: "string",
+                  },
                   apiKey: {
                     anyOf: [
                       {
@@ -12862,6 +12865,10 @@ export const GENERATED_BASE_CONFIG_SCHEMA = {
       label: "Web Search Cache TTL (min)",
       help: "Cache TTL in minutes for web_search results.",
       tags: ["performance", "storage", "tools"],
+    },
+    "tools.web.search.proxy": {
+      label: "Web Search Proxy URL",
+      tags: ["tools"],
     },
     "tools.web.fetch.enabled": {
       label: "Enable Web Fetch Tool",

@@ -503,6 +503,8 @@ export type ToolsConfig = {
       timeoutSeconds?: number;
       /** Cache TTL in minutes for search results. */
       cacheTtlMinutes?: number;
+      /** HTTP(S) proxy URL for outbound search requests (e.g. "http://127.0.0.1:18924"). */
+      proxy?: string;
       /** @deprecated Legacy Brave scoped config. */
       brave?: WebSearchLegacyProviderConfig;
       /** @deprecated Legacy Firecrawl scoped config. */
