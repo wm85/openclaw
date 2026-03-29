@@ -16,9 +16,9 @@ DOMAIN="gui/$(id -u)"
 
 # ---- 机器人注册表 ----
 typeset -A BOT_LABEL BOT_PORT BOT_LOG BOT_DISPLAY
-BOT_DISPLAY=(adan 阿蛋 xiaoguang 小广 xiaolin 小麟 xiaoshao 小哨 xiaoxin 小馨 adai 阿呆)
-BOT_LABEL=(adan com.openclaw.gateway-adan xiaoguang com.openclaw.xiaoguang xiaolin com.openclaw.gateway-moai xiaoshao com.openclaw.gateway-xiaoshao xiaoxin com.openclaw.gateway-xiaoxin adai com.openclaw.gateway-adai)
-BOT_PORT=(adan 18700 xiaoguang 18710 xiaolin 18720 xiaoshao 18730 xiaoxin 18740 adai 18750)
+BOT_DISPLAY=(adan 阿蛋 xiaoguang 小广 xiaolin 小麟 xiaoshao 小哨 xiaoxin 小馨 adai 阿呆 afei 阿飞 xiaopin 小拼 xiaoyin 小音 pinxiaoer 拼小二)
+BOT_LABEL=(adan com.openclaw.gateway-adan xiaoguang com.openclaw.xiaoguang xiaolin com.openclaw.gateway-moai xiaoshao com.openclaw.gateway-xiaoshao xiaoxin com.openclaw.gateway-xiaoxin adai com.openclaw.gateway-adai afei com.openclaw.gateway-afei xiaopin com.openclaw.gateway-xiaopin xiaoyin com.openclaw.gateway-xiaoyin pinxiaoer com.openclaw.gateway-pinxiaoer)
+BOT_PORT=(adan 18700 xiaoguang 18710 xiaolin 18720 xiaoshao 18730 xiaoxin 18740 adai 18750 afei 18760 xiaopin 18770 xiaoyin 18780 pinxiaoer 18790)
 BOT_LOG=(
     adan    /tmp/openclaw-adan.log
     xiaoguang /tmp/openclaw-xiaoguang.log
@@ -26,8 +26,12 @@ BOT_LOG=(
     xiaoshao  /tmp/openclaw-xiaoshao.log
     xiaoxin   /tmp/openclaw-xiaoxin.log
     adai      /tmp/openclaw-adai.log
+    afei      /tmp/openclaw-afei.log
+    xiaopin   /tmp/openclaw-xiaopin.log
+    xiaoyin   /tmp/openclaw-xiaoyin.log
+    pinxiaoer /tmp/openclaw-pinxiaoer.log
 )
-ALL_BOTS=(adan xiaoguang xiaolin xiaoshao xiaoxin adai)
+ALL_BOTS=(adan xiaoguang xiaolin xiaoshao xiaoxin adai afei xiaopin xiaoyin pinxiaoer)
 
 # ---- 清理 macOS 冲突副本文件 ----
 clean_macos_conflict_copies() {
@@ -158,6 +162,10 @@ resolve_bot() {
         xiaoshao|xs|小哨|哨)          echo xiaoshao ;;
         xiaoxin|xx|小馨|馨)           echo xiaoxin ;;
         adai|ad|阿呆|呆)              echo adai ;;
+        afei|af|阿飞|飞)              echo afei ;;
+        xiaopin|xp|小拼|拼)           echo xiaopin ;;
+        xiaoyin|xy|小音|音)           echo xiaoyin ;;
+        pinxiaoer|pxe|拼小二|小二)    echo pinxiaoer ;;
         *)                             echo "" ;;
     esac
 }
@@ -242,6 +250,10 @@ main() {
         echo "  xiaoshao / xs    重启小哨 (端口 18730)"
         echo "  xiaoxin / xx     重启小馨 (端口 18740)"
         echo "  adai / ad        重启阿呆 (端口 18750)"
+        echo "  afei / af        重启阿飞 (端口 18760)"
+        echo "  xiaopin / xp     重启小拼 (端口 18770)"
+        echo "  xiaoyin / xy     重启小音 (端口 18780)"
+        echo "  pinxiaoer / pxe  重启拼小二 (端口 18790)"
         echo "  status / s       查看所有机器人状态"
         echo ""
         echo "支持同时指定多个: ${0:t} adan xiaolin"
@@ -253,7 +265,7 @@ main() {
         local bot=$(resolve_bot "$arg")
         if [[ -z "$bot" ]]; then
             log_err "未知机器人: ${arg}"
-            echo "  可用: adan(阿蛋), xiaoguang/xg(小广), xiaolin/xl(小麟), xiaoshao/xs(小哨), adai/ad(阿呆)"
+            echo "  可用: adan(阿蛋), xiaoguang/xg(小广), xiaolin/xl(小麟), xiaoshao/xs(小哨), adai/ad(阿呆), afei/af(阿飞), xiaopin/xp(小拼), xiaoyin/xy(小音), pinxiaoer/pxe(拼小二)"
             exit 1
         fi
         targets+=("$bot")
